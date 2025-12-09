@@ -1,36 +1,32 @@
-// productController.js (FINAL CORRECTED VERSION with createdByRole)
-
+// productController.js (UPDATED TO MATCH PRODUCT MODEL)
 import Product from '../models/Product.js';
-// Import other necessary modules like file system functions (if needed for file cleanup)
-// import fs from 'fs'; 
 
-// @desc    Create a new product (Auth Required)
-// @route   POST /api/products/create
-// @access  Private (User or Admin)
+
+// @desc    Create a new product (Auth Required)
+// @route   POST /api/products/create
+// @access  Private (User or Admin)
 const createProduct = async (req, res) => {
-    // req.user is populated by the 'auth' middleware
-    const { name, description, age, state, city, phone_no, whatsapp_no } = req.body;
+    const { 
+        name, description, age, hourly_rate, night_rate, phone_no, whatsapp_no, 
+        fantasies, services, availability, city, state 
+    } = req.body;
     
-    // Check if the file was successfully uploaded by multer
-    if (!req.file) {
-        return res.status(400).json({ message: 'Product image is required.' });
+    // Check if at least one image was uploaded
+    if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ message: 'At least one product image is required.' });
     }
     
-    // 🚨 FIX: Set the image path to the relative URL path for database storage
-    const imagePath = `/images/${req.file.filename}`; 
-
+    // Store image paths as array of relative URLs
+    const imagePaths = req.files.map(file => `/images/${file.filename}`);
+    
     // Determine the user's role
     const isAdmin = req.user && req.user.role === 'admin';
-
-    // Set the product status and the creator role based on isAdmin
     const status = isAdmin ? 'Approved' : 'Pending';
-    const createdByRole = isAdmin ? 'Admin' : 'User'; // 🚨 NEW FIELD LOGIC
+    const createdByRole = isAdmin ? 'Admin' : 'User';
 
-    if (!name || !description || !state || !city || !phone_no) {
-        // If data is missing, clean up the uploaded file before sending error response
-        // Note: Use req.file.path (absolute path) for fs.unlinkSync, not imagePath (relative URL)
-        // if (req.file.path) fs.unlinkSync(req.file.path); 
-        return res.status(400).json({ message: 'Please fill all required fields.' });
+    // Validate required fields
+    if (!name || !description || !city || !state || !phone_no) {
+        return res.status(400).json({ message: 'Please fill all required fields: name, description, city, state, phone_no.' });
     }
 
     try {
@@ -38,57 +34,80 @@ const createProduct = async (req, res) => {
             name,
             description,
             age,
-            state,
-            city,
+            hourly_rate: hourly_rate || 0,
+            night_rate: night_rate || 0,
             phone_no,
-            whatsapp_no,
-            image: imagePath,
-            owner: req.user._id, // Assign the authenticated user's ID as owner
-            createdByRole: createdByRole, // 🚨 Set the creator's role
-            status: status,
+            whatsapp_no: whatsapp_no || '',
+            fantasies: fantasies || [],
+            services: services || [],
+            availability: availability || 'Available',
+            city,
+            state,
+            images: imagePaths,  // ✅ FIXED: Use 'images' array instead of 'image'
+            owner: req.user._id,
+            createdByRole,
+            status,
+            verified: false,
+            featured: false,
+            rating: 0,
+            reviews: 0
         });
 
         const product = await newProduct.save();
         
-        // Respond with 201 Created
         res.status(201).json({ 
             message: 'Product created successfully.',
-            product: product,
-            status: status // Inform the frontend about the determined status
+            product,
+            status
         });
 
     } catch (error) {
         console.error('Product creation error:', error);
-        // If save fails, clean up the uploaded file
-        // if (req.file && req.file.path) fs.unlinkSync(req.file.path); // Uncomment with fs import
         res.status(500).json({ message: 'Server error during product creation.' });
     }
 };
 
-// @desc    Get all products (Admin Only, includes Pending)
-// @route   GET /api/products/admin/all
-// @access  Private/Admin
+
+// @desc    Get all products (Admin Only, includes Pending)
+// @route   GET /api/products/admin/all
+// @access  Private/Admin
 const getAllProducts = async (req, res) => {
-    // 'auth' and 'admin' middleware ensure req.user is an admin here.
     try {
-        // Includes the 'createdByRole' field now
-        const products = await Product.find({}).populate('owner', 'name email');
+        const products = await Product.find({})
+            .populate('owner', 'name email role')
+            .sort({ createdAt: -1 });
         res.status(200).json(products);
     } catch (error) {
+        console.error('Error fetching all products:', error);
         res.status(500).json({ message: 'Server error fetching all products.' });
     }
 };
 
-// @desc    Get approved products (Public)
-// @route   GET /api/products
-// @access  Public
 
+// @desc    Get approved products (Public)
+// @route   GET /api/products/approved
+// @access  Public
+const getApprovedProducts = async (req, res) => {
+    try {
+        const products = await Product.find({ status: 'Approved' })
+            .populate('owner', 'name email')
+            .sort({ createdAt: -1 });
+        res.status(200).json(products);
+    } catch (error) {
+        console.error('Error fetching approved products:', error);
+        res.status(500).json({ message: 'Server error fetching approved products.' });
+    }
+};
+
+
+// @desc    Get pending products (Admin Only)
+// @route   GET /api/products/pending
+// @access  Private/Admin
 const getPendingProducts = async (req, res) => {
     try {
-        // Fetch only PENDING posts, sorted by oldest first for priority review.
         const products = await Product.find({ status: 'Pending' })
             .sort({ createdAt: 1 })
-            .populate('owner', 'name email role'); // Added 'role' to population
+            .populate('owner', 'name email role');
         res.status(200).json(products);
     } catch (error) {
         console.error('Error in getPendingProducts:', error);
@@ -97,23 +116,31 @@ const getPendingProducts = async (req, res) => {
 };
 
 
+// @desc    Get product by ID
+// @route   GET /api/products/:id
+// @access  Public
 const getProductById = async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id).populate('owner', 'name email phone_no');
-
+        const product = await Product.findById(req.params.id)
+            .populate('owner', 'name email phone_no');
+        
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
         }
         res.status(200).json(product);
     } catch (error) {
         console.error('Error in getProductById:', error);
-        if (error instanceof mongoose.CastError) {
-             return res.status(400).json({ message: 'Invalid product ID format.' });
+        if (error.name === 'CastError') {
+            return res.status(400).json({ message: 'Invalid product ID format.' });
         }
         res.status(500).json({ message: 'Server error fetching product.' });
     }
 };
 
+
+// @desc    Update product status (Admin Only)
+// @route   PATCH /api/products/:id/status
+// @access  Private/Admin
 const updateProductStatus = async (req, res) => {
     const { status } = req.body;
     const productId = req.params.id;
@@ -122,16 +149,15 @@ const updateProductStatus = async (req, res) => {
         return res.status(400).json({ message: 'Status field is required.' });
     }
     
-    // Ensure the status is one of the allowed enum values
-    const allowedStatuses = ['Pending', 'Approved', 'Rejected', 'Done'];
+    const allowedStatuses = ['Pending', 'Approved', 'Rejected'];
     if (!allowedStatuses.includes(status)) {
-        return res.status(400).json({ message: 'Invalid status value.' });
+        return res.status(400).json({ message: 'Invalid status value. Must be Pending, Approved, or Rejected.' });
     }
 
     try {
         const product = await Product.findByIdAndUpdate(
             productId,
-            { status: status },
+            { status },
             { new: true, runValidators: true }
         );
 
@@ -139,35 +165,33 @@ const updateProductStatus = async (req, res) => {
             return res.status(404).json({ message: 'Product not found.' });
         }
         
-        res.status(200).json({ message: `Status updated to ${status}`, product });
+        res.status(200).json({ 
+            message: `Status updated to ${status}`, 
+            product 
+        });
 
     } catch (error) {
         console.error('Error in updateProductStatus:', error);
-        if (error instanceof mongoose.CastError) {
-             return res.status(400).json({ message: 'Invalid product ID format.' });
+        if (error.name === 'CastError') {
+            return res.status(400).json({ message: 'Invalid product ID format.' });
         }
         res.status(500).json({ message: 'Server error updating status.' });
     }
 };
 
-const getApprovedProducts = async (req, res) => {
-    try {
-        const products = await Product.find({ status: 'Approved' }).populate('owner', 'name email');
-        res.status(200).json(products);
-    } catch (error) {
-        res.status(500).json({ message: 'Server error fetching approved products.' });
-    }
-};
 
-
-// @desc    Update a product (Auth Required - Owner or Admin)
-// @route   PUT /api/products/:id
-// @access  Private
+// @desc    Update a product (Auth Required - Owner or Admin)
+// @route   PUT /api/products/:id
+// @access  Private
 const updateProduct = async (req, res) => {
-    // req.user is populated by the 'auth' middleware
     const productId = req.params.id;
     const updates = req.body;
     
+    // Handle new images if uploaded
+    if (req.files && req.files.length > 0) {
+        updates.images = req.files.map(file => `/images/${file.filename}`);
+    }
+
     try {
         const product = await Product.findById(productId);
 
@@ -175,7 +199,7 @@ const updateProduct = async (req, res) => {
             return res.status(404).json({ message: 'Product not found.' });
         }
 
-        // --- AUTHORIZATION CHECK ---
+        // Authorization check
         const isOwner = product.owner.toString() === req.user._id.toString();
         const isAdmin = req.user.role === 'admin';
 
@@ -183,19 +207,28 @@ const updateProduct = async (req, res) => {
             return res.status(403).json({ message: 'Not authorized to update this product.' });
         }
 
-        // Prevent non-admins from manually setting status to Approved
-        if (!isAdmin && updates.status && updates.status !== product.status) {
-            // If the user is not an admin, they cannot change the status field
-            delete updates.status; 
+        // Prevent non-admins from changing status
+        if (!isAdmin && updates.status) {
+            delete updates.status;
         }
 
-        // Handle image update if you add logic for it later (currently not supported here)
-
-        // Update the product fields
-        Object.assign(product, updates);
+        // Update allowed fields
+        const allowedUpdates = [
+            'name', 'description', 'age', 'hourly_rate', 'night_rate', 'phone_no', 
+            'whatsapp_no', 'fantasies', 'services', 'availability', 'city', 'state', 'images'
+        ];
         
+        const filteredUpdates = {};
+        allowedUpdates.forEach(field => {
+            if (updates[field] !== undefined) {
+                filteredUpdates[field] = updates[field];
+            }
+        });
+
+        Object.assign(product, filteredUpdates);
         const updatedProduct = await product.save();
-        res.json(updatedProduct);
+        
+        res.status(200).json(updatedProduct);
 
     } catch (error) {
         console.error('Product update error:', error);
@@ -204,11 +237,10 @@ const updateProduct = async (req, res) => {
 };
 
 
-// @desc    Delete a product (Auth Required - Owner or Admin)
-// @route   DELETE /api/products/:id
-// @access  Private
+// @desc    Delete a product (Auth Required - Owner or Admin)
+// @route   DELETE /api/products/:id
+// @access  Private
 const deleteProduct = async (req, res) => {
-    // req.user is populated by the 'auth' middleware
     const productId = req.params.id;
 
     try {
@@ -218,7 +250,7 @@ const deleteProduct = async (req, res) => {
             return res.status(404).json({ message: 'Product not found.' });
         }
 
-        // --- AUTHORIZATION CHECK ---
+        // Authorization check
         const isOwner = product.owner.toString() === req.user._id.toString();
         const isAdmin = req.user.role === 'admin';
 
@@ -226,15 +258,8 @@ const deleteProduct = async (req, res) => {
             return res.status(403).json({ message: 'Not authorized to delete this product.' });
         }
 
-        // Optional: Implement file cleanup here (delete image from storage)
-        // if (product.image && product.image.startsWith('/images/')) {
-        //     // You would need to construct the absolute path here, e.g.,
-        //     // const absolutePath = path.join(process.cwd(), 'server', product.image); 
-        //     // fs.unlinkSync(absolutePath);
-        // }
-
-        await Product.deleteOne({ _id: productId });
-        res.json({ message: 'Product removed successfully.' });
+        await Product.findByIdAndDelete(productId);
+        res.status(200).json({ message: 'Product deleted successfully.' });
 
     } catch (error) {
         console.error('Product deletion error:', error);
@@ -242,15 +267,13 @@ const deleteProduct = async (req, res) => {
     }
 };
 
-
 export {
     createProduct,
     getAllProducts,
     getApprovedProducts,
+    getPendingProducts,
+    getProductById,
     updateProduct,
-    deleteProduct,
-
-    getPendingProducts, // <-- Export new function
-    getProductById, // <-- Export new function
-    updateProductStatus // <-- Export new function
+    updateProductStatus,
+    deleteProduct
 };
